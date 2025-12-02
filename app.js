@@ -196,9 +196,6 @@ function stopBroadcast() {
 // 1. Handle Messages (Signaling + Chat)
 async function handleMessage(e) {
     const data = e.data;
-    const sender = data.senderClientId || e.clientId; // Sometimes Websim wraps, sometimes not depending on event type? 
-    // Actually WebsimSocket 'onmessage' event usually has data structure directly if using room.send
-    
     // Note: room.send sends { ...data }, receiver gets { ...data, clientId, username, etc }
     const fromId = data.clientId;
 
@@ -207,19 +204,39 @@ async function handleMessage(e) {
         return;
     }
 
+    // Signaling: Filter by target!
+    // If the message is not intended for us (and it's a signaling message), ignore it.
+    // 'join-request' is an exception as it targets the broadcasterId which is in room state,
+    // but the host should check if they are the target.
+    const isSignaling = data.type.startsWith('signal-');
+    if (isSignaling && data.target !== room.clientId) {
+        return;
+    }
+
     // Host Logic: Handling join requests and answers
     if (isBroadcasting && isOwner && room.roomState.broadcasterId === room.clientId) {
         if (data.type === 'join-request') {
-            createHostPeerConnection(fromId);
+            // Only accept if we are the target (broadcaster)
+            if (data.target === room.clientId) {
+                createHostPeerConnection(fromId);
+            }
         } else if (data.type === 'signal-answer') {
             const pc = peerConnections[fromId];
             if (pc) {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                try {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                } catch (err) {
+                    console.error("Host: Error setting remote description", err);
+                }
             }
         } else if (data.type === 'signal-ice') {
             const pc = peerConnections[fromId];
             if (pc && data.candidate) {
-                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (err) {
+                    console.error("Host: Error adding ICE candidate", err);
+                }
             }
         }
     }
@@ -229,10 +246,18 @@ async function handleMessage(e) {
         // Verify message is from current broadcaster
         if (fromId === room.roomState.broadcasterId) {
             if (data.type === 'signal-offer') {
-                handleOffer(data);
+                // Ensure this offer is specifically for ME
+                if (data.target === room.clientId) {
+                    handleOffer(data);
+                }
             } else if (data.type === 'signal-ice') {
-                if (hostConnection && data.candidate) {
-                    await hostConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                // Ensure this candidate is for ME
+                if (data.target === room.clientId && hostConnection && data.candidate) {
+                    try {
+                        await hostConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    } catch (err) {
+                        console.error("Viewer: Error adding ICE candidate", err);
+                    }
                 }
             }
         }
