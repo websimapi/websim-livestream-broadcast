@@ -1,0 +1,410 @@
+import DOMPurify from 'dompurify';
+
+const room = new WebsimSocket();
+let currentUser = null;
+let projectCreator = null;
+let isOwner = false;
+
+// WebRTC Configuration
+const RTC_CONFIG = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+};
+
+// State
+let localStream = null;
+let peerConnections = {}; // Host: map of clientId -> RTCPeerConnection
+let hostConnection = null; // Viewer: RTCPeerConnection to Host
+let isBroadcasting = false;
+
+// UI Elements
+const ui = {
+    video: document.getElementById('main-video'),
+    placeholder: document.getElementById('video-placeholder'),
+    statusText: document.getElementById('status-text'),
+    hostControls: document.getElementById('host-controls'),
+    streamTitleInput: document.getElementById('stream-title-input'),
+    btnStart: document.getElementById('btn-start-stream'),
+    btnStop: document.getElementById('btn-stop-stream'),
+    
+    // Info
+    displayTitle: document.getElementById('stream-title-display'),
+    displayHost: document.getElementById('streamer-name'),
+    displayAvatar: document.getElementById('streamer-avatar'),
+    viewerCount: document.getElementById('viewer-count'),
+    hostStats: document.getElementById('host-stats'),
+
+    // Chat
+    chatMsgs: document.getElementById('chat-messages'),
+    chatForm: document.getElementById('chat-form'),
+    chatInput: document.getElementById('chat-input'),
+};
+
+// --- Initialization ---
+async function init() {
+    // 1. Auth & Role Check
+    try {
+        currentUser = await window.websim.getCurrentUser();
+        projectCreator = await window.websim.getCreator();
+        isOwner = (currentUser.id === projectCreator.id);
+    } catch (e) {
+        console.error("Auth failed", e);
+        // Fallback for non-logged in or errors
+        isOwner = false;
+        currentUser = { username: "Guest_" + Math.floor(Math.random()*1000) };
+    }
+
+    await room.initialize();
+    
+    // Initial UI State
+    setupUI();
+
+    // Subscribe to State
+    room.subscribeRoomState(handleRoomState);
+    room.subscribePresence(handlePresence);
+    
+    // Websocket Messages (Signaling + Chat)
+    room.onmessage = handleMessage;
+
+    console.log("Initialized. Role:", isOwner ? "Potential Host" : "Viewer");
+}
+
+function setupUI() {
+    if (isOwner) {
+        // We are the owner. We might be able to broadcast.
+        // Check if there is already an active broadcaster in the room state
+        checkHostCapability();
+    }
+
+    // Chat
+    ui.chatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = ui.chatInput.value.trim();
+        if (!text) return;
+        
+        room.send({
+            type: 'chat',
+            text: text,
+            username: currentUser.username,
+            userId: currentUser.id, // helpful for styling host vs others
+            echo: true 
+        });
+        ui.chatInput.value = '';
+    });
+
+    // Broadcast Controls
+    ui.btnStart.addEventListener('click', startBroadcast);
+    ui.btnStop.addEventListener('click', stopBroadcast);
+}
+
+// --- Logic: Role Management ---
+function checkHostCapability() {
+    // If room says someone is broadcasting
+    const state = room.roomState;
+    if (state.broadcasterId && state.isLive) {
+        // Someone is live. Is it me?
+        if (state.broadcasterId === room.clientId) {
+            // It's me (maybe I refreshed). But I lost the stream object.
+            // So I need to restart or clear state.
+            // For now, let's assume if I refresh, stream dies, so I should see "Start Stream"
+            // But I should probably reset the room state first to be clean.
+            room.updateRoomState({ isLive: false, broadcasterId: null });
+        } else {
+            // It's another tab of mine (or I am owner but another owner tab is live)
+            // Show viewer UI.
+            ui.hostControls.classList.add('hidden');
+        }
+    } else {
+        // No one is live. Show controls.
+        ui.hostControls.classList.remove('hidden');
+        ui.btnStart.classList.remove('hidden');
+        ui.btnStop.classList.add('hidden');
+    }
+}
+
+// --- Logic: Streaming (Host Side) ---
+async function startBroadcast() {
+    try {
+        localStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: "always" },
+            audio: true
+        });
+
+        // Handle stream stop via browser UI
+        localStream.getVideoTracks()[0].onended = () => stopBroadcast();
+
+        // Show local preview
+        ui.video.srcObject = localStream;
+        ui.video.muted = true; // Don't hear myself
+
+        // Update UI
+        isBroadcasting = true;
+        ui.btnStart.classList.add('hidden');
+        ui.btnStop.classList.remove('hidden');
+        ui.placeholder.classList.remove('visible');
+
+        // Update Room State
+        room.updateRoomState({
+            isLive: true,
+            broadcasterId: room.clientId,
+            streamTitle: ui.streamTitleInput.value,
+            startedAt: Date.now()
+        });
+
+        addSystemMessage("Broadcast started.");
+
+    } catch (err) {
+        console.error("Error starting stream:", err);
+        alert("Could not start screen capture.");
+    }
+}
+
+function stopBroadcast() {
+    if (!isBroadcasting) return;
+
+    // Stop tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+
+    // Close all peer connections
+    Object.values(peerConnections).forEach(pc => pc.close());
+    peerConnections = {};
+
+    // Update Room State
+    room.updateRoomState({
+        isLive: false,
+        broadcasterId: null
+    });
+
+    // Reset UI
+    isBroadcasting = false;
+    ui.video.srcObject = null;
+    ui.btnStart.classList.remove('hidden');
+    ui.btnStop.classList.add('hidden');
+    ui.placeholder.classList.add('visible');
+    ui.statusText.textContent = "Broadcast Ended";
+    
+    addSystemMessage("Broadcast ended.");
+}
+
+// --- Logic: WebRTC Signaling ---
+
+// 1. Handle Messages (Signaling + Chat)
+async function handleMessage(e) {
+    const data = e.data;
+    const sender = data.senderClientId || e.clientId; // Sometimes Websim wraps, sometimes not depending on event type? 
+    // Actually WebsimSocket 'onmessage' event usually has data structure directly if using room.send
+    
+    // Note: room.send sends { ...data }, receiver gets { ...data, clientId, username, etc }
+    const fromId = data.clientId;
+
+    if (data.type === 'chat') {
+        addChatMessage(data);
+        return;
+    }
+
+    // Host Logic: Handling join requests and answers
+    if (isBroadcasting && isOwner && room.roomState.broadcasterId === room.clientId) {
+        if (data.type === 'join-request') {
+            createHostPeerConnection(fromId);
+        } else if (data.type === 'signal-answer') {
+            const pc = peerConnections[fromId];
+            if (pc) {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            }
+        } else if (data.type === 'signal-ice') {
+            const pc = peerConnections[fromId];
+            if (pc && data.candidate) {
+                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        }
+    }
+
+    // Viewer Logic: Handling offers and candidates
+    if (!isBroadcasting) {
+        // Verify message is from current broadcaster
+        if (fromId === room.roomState.broadcasterId) {
+            if (data.type === 'signal-offer') {
+                handleOffer(data);
+            } else if (data.type === 'signal-ice') {
+                if (hostConnection && data.candidate) {
+                    await hostConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            }
+        }
+    }
+}
+
+// 2. Host: Create Connection for a Viewer
+async function createHostPeerConnection(targetClientId) {
+    console.log(`Creating PC for viewer ${targetClientId}`);
+    if (peerConnections[targetClientId]) peerConnections[targetClientId].close();
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    peerConnections[targetClientId] = pc;
+
+    // Add Tracks
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+    // ICE Handling
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            room.send({
+                type: 'signal-ice',
+                target: targetClientId,
+                candidate: event.candidate,
+                echo: false
+            });
+        }
+    };
+
+    // Create Offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    room.send({
+        type: 'signal-offer',
+        target: targetClientId,
+        sdp: offer,
+        echo: false
+    });
+}
+
+// 3. Viewer: Handle Offer
+async function handleOffer(data) {
+    console.log("Received Offer from Host");
+    
+    if (hostConnection) hostConnection.close();
+    hostConnection = new RTCPeerConnection(RTC_CONFIG);
+
+    // Handle Incoming Stream
+    hostConnection.ontrack = (event) => {
+        console.log("Received Track");
+        if (ui.video.srcObject !== event.streams[0]) {
+            ui.video.srcObject = event.streams[0];
+            ui.video.muted = false; // Enable audio for viewer
+            ui.placeholder.classList.remove('visible');
+        }
+    };
+
+    // ICE Handling
+    hostConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+            room.send({
+                type: 'signal-ice',
+                target: data.clientId, // Send back to host
+                candidate: event.candidate,
+                echo: false
+            });
+        }
+    };
+
+    await hostConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    const answer = await hostConnection.createAnswer();
+    await hostConnection.setLocalDescription(answer);
+
+    room.send({
+        type: 'signal-answer',
+        target: data.clientId,
+        sdp: answer,
+        echo: false
+    });
+}
+
+// --- State Handlers ---
+
+function handleRoomState(state) {
+    // Info Updates
+    if (state.streamTitle) ui.displayTitle.textContent = state.streamTitle;
+    
+    // Check Broadcaster
+    if (state.isLive && state.broadcasterId) {
+        const hostPeer = room.peers[state.broadcasterId];
+        if (hostPeer) {
+            ui.displayHost.textContent = hostPeer.username;
+            ui.displayAvatar.src = hostPeer.avatarUrl;
+            ui.displayAvatar.classList.remove('hidden');
+        }
+
+        // Logic for Viewer Joining
+        // If we are not the broadcaster, and we don't have a connection, request one
+        if (state.broadcasterId !== room.clientId && !hostConnection) {
+            console.log("Stream detected, requesting join...");
+            ui.statusText.textContent = "Joining Stream...";
+            ui.placeholder.classList.add('visible');
+            
+            // Wait a sec for socket to be stable or just send
+            setTimeout(() => {
+                room.send({
+                    type: 'join-request',
+                    target: state.broadcasterId,
+                    echo: false
+                });
+            }, 1000);
+        }
+
+        // If I am owner but not the broadcasterId, hide my controls
+        if (isOwner && state.broadcasterId !== room.clientId) {
+            ui.hostControls.classList.add('hidden');
+        }
+    } else {
+        // Stream Ended
+        if (!isBroadcasting) {
+            ui.statusText.textContent = "Waiting for stream...";
+            ui.placeholder.classList.add('visible');
+            if (hostConnection) {
+                hostConnection.close();
+                hostConnection = null;
+            }
+            ui.video.srcObject = null;
+            
+            // If owner, show controls again
+            if (isOwner) checkHostCapability();
+        }
+    }
+}
+
+function handlePresence(presence) {
+    // Update Viewer Count
+    const count = Object.keys(room.peers).length;
+    ui.viewerCount.textContent = `${count} Viewer${count !== 1 ? 's' : ''}`;
+
+    // Update Host Stats
+    if (isBroadcasting) {
+        const peerCount = Object.keys(peerConnections).length;
+        ui.hostStats.textContent = `Peers: ${peerCount} | Streaming Active`;
+    }
+}
+
+// --- Chat UI ---
+function addChatMessage(data) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    
+    const isHost = (projectCreator && data.userId === projectCreator.id);
+    
+    const cleanText = DOMPurify.sanitize(data.text);
+    
+    div.innerHTML = `
+        <span class="chat-author ${isHost ? 'host' : ''}">${DOMPurify.sanitize(data.username)}:</span>
+        <span class="chat-text">${cleanText}</span>
+    `;
+    
+    ui.chatMsgs.appendChild(div);
+    ui.chatMsgs.scrollTop = ui.chatMsgs.scrollHeight;
+}
+
+function addSystemMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'system-msg';
+    div.textContent = text;
+    ui.chatMsgs.appendChild(div);
+    ui.chatMsgs.scrollTop = ui.chatMsgs.scrollHeight;
+}
+
+// Start
+init();

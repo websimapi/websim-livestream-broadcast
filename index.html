@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LiveStream Broadcast</title>
+    <link rel="stylesheet" href="styles.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "dompurify": "https://esm.sh/dompurify"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Main Content (Video + Info) -->
+        <main class="stream-area">
+            <div class="video-wrapper">
+                <video id="main-video" autoplay playsinline muted></video>
+                
+                <!-- Overlays -->
+                <div id="video-placeholder" class="placeholder visible">
+                    <div class="status-message">
+                        <div class="pulse-ring"></div>
+                        <h2 id="status-text">Waiting for Stream...</h2>
+                    </div>
+                </div>
+
+                <div id="host-controls" class="controls-overlay hidden">
+                    <div class="control-panel">
+                        <h3>Broadcast Controls</h3>
+                        <div class="input-group">
+                            <input type="text" id="stream-title-input" placeholder="Stream Title" value="Live Coding Session">
+                        </div>
+                        <div class="btn-group">
+                            <button id="btn-start-stream" class="btn-primary">
+                                <span class="icon">●</span> Go Live
+                            </button>
+                            <button id="btn-stop-stream" class="btn-danger hidden">
+                                <span class="icon">■</span> End Stream
+                            </button>
+                        </div>
+                        <div class="tech-stats" id="host-stats">
+                            Peers: 0 | Bandwidth: 0 KB/s
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stream-info">
+                <div class="info-header">
+                    <div class="avatar-container">
+                        <img id="streamer-avatar" src="" alt="" class="avatar hidden">
+                    </div>
+                    <div class="text-content">
+                        <h1 id="stream-title-display">Offline</h1>
+                        <div class="meta-row">
+                            <span id="streamer-name">--</span>
+                            <span class="dot-separator">•</span>
+                            <span id="viewer-count" class="viewer-badge">0 Viewers</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Chat Sidebar -->
+        <aside class="chat-sidebar">
+            <div class="chat-header">
+                <h3>Live Chat</h3>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="system-msg">Welcome to the chat room!</div>
+            </div>
+            <form id="chat-form" class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Send a message..." autocomplete="off">
+                <button type="submit" id="chat-send">Send</button>
+            </form>
+        </aside>
+    </div>
+
+    <script type="module" src="app.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
