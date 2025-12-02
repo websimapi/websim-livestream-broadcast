@@ -19,6 +19,7 @@ let peerConnections = {}; // Host: map of clientId -> RTCPeerConnection
 let hostConnection = null; // Viewer: RTCPeerConnection to Host
 let iceCandidateBuffer = []; // Viewer: buffer for candidates arriving before remote description
 let isBroadcasting = false;
+let joinTimeout = null;
 
 // UI Elements
 const ui = {
@@ -50,12 +51,12 @@ async function init() {
     try {
         currentUser = await window.websim.getCurrentUser();
         projectCreator = await window.websim.getCreator();
-        isOwner = (currentUser.id === projectCreator.id);
+        isOwner = (currentUser && projectCreator && currentUser.id === projectCreator.id);
     } catch (e) {
         console.error("Auth failed", e);
         // Fallback for non-logged in or errors
         isOwner = false;
-        currentUser = { username: "Guest_" + Math.floor(Math.random()*1000) };
+        currentUser = { username: "Guest_" + Math.floor(Math.random()*1000), id: `guest-${Date.now()}` };
     }
 
     await room.initialize();
@@ -75,9 +76,11 @@ async function init() {
 
 function setupUI() {
     if (isOwner) {
-        // We are the owner. We might be able to broadcast.
         // Check if there is already an active broadcaster in the room state
         checkHostCapability();
+    } else {
+        // Not owner
+        ui.hostControls.classList.add('hidden');
     }
 
     // Chat
@@ -103,25 +106,53 @@ function setupUI() {
 
 // --- Logic: Role Management ---
 function checkHostCapability() {
-    // If room says someone is broadcasting
+    if (!isOwner) return;
+
     const state = room.roomState;
-    if (state.broadcasterId && state.isLive) {
-        // Someone is live. Is it me?
-        if (state.broadcasterId === room.clientId) {
-            // It's me (maybe I refreshed). But I lost the stream object.
-            // So I need to restart or clear state.
-            // For now, let's assume if I refresh, stream dies, so I should see "Start Stream"
-            // But I should probably reset the room state first to be clean.
-            room.updateRoomState({ isLive: false, broadcasterId: null });
-        } else {
-            // It's another tab of mine (or I am owner but another owner tab is live)
-            // Show viewer UI.
-            ui.hostControls.classList.add('hidden');
-            ui.liveControls.classList.add('hidden');
-        }
+    const broadcasterId = state.broadcasterId;
+    
+    // Default assumptions
+    let showStartControls = false;
+    let showLiveControls = false;
+
+    if (!state.isLive || !broadcasterId) {
+        // Clean state, ready to host
+        showStartControls = true;
     } else {
-        // No one is live. Show controls.
+        // State says someone is live.
+        // Check if that someone is actually here (Zombie check)
+        const broadcasterPresent = room.peers[broadcasterId];
+        
+        if (!broadcasterPresent) {
+            console.log("Zombie broadcast detected (host missing). Resetting state...");
+            room.updateRoomState({ isLive: false, broadcasterId: null, streamTitle: null });
+            showStartControls = true; // Optimistic
+        } else if (broadcasterId === room.clientId) {
+             // It says I am the broadcaster.
+             if (isBroadcasting) {
+                 showLiveControls = true;
+             } else {
+                 // I am the broadcaster ID, but I am not locally broadcasting (e.g. refresh).
+                 console.log("State mismatch (I am host but not streaming). Resetting...");
+                 room.updateRoomState({ isLive: false, broadcasterId: null });
+                 showStartControls = true;
+             }
+        } else {
+            // Another valid peer is broadcasting
+            showStartControls = false;
+            showLiveControls = false;
+        }
+    }
+
+    // Apply UI
+    if (showStartControls) {
         ui.hostControls.classList.remove('hidden');
+        ui.liveControls.classList.add('hidden');
+    } else if (showLiveControls) {
+        ui.hostControls.classList.add('hidden');
+        ui.liveControls.classList.remove('hidden');
+    } else {
+        ui.hostControls.classList.add('hidden');
         ui.liveControls.classList.add('hidden');
     }
 }
@@ -364,6 +395,11 @@ function handleRoomState(state) {
     // Info Updates
     if (state.streamTitle) ui.displayTitle.textContent = state.streamTitle;
     
+    // Owner Logic: Update Controls based on state
+    if (isOwner) {
+        checkHostCapability();
+    }
+
     // Check Broadcaster
     if (state.isLive && state.broadcasterId) {
         const hostPeer = room.peers[state.broadcasterId];
@@ -374,25 +410,23 @@ function handleRoomState(state) {
         }
 
         // Logic for Viewer Joining
-        // If we are not the broadcaster, and we don't have a connection, request one
+        // If we are not the broadcaster (by ID), request join
         if (state.broadcasterId !== room.clientId && !hostConnection) {
-            console.log("Stream detected, requesting join...");
-            ui.statusText.textContent = "Joining Stream...";
-            ui.placeholder.classList.add('visible');
-            
-            // Wait a sec for socket to be stable or just send
-            setTimeout(() => {
-                room.send({
-                    type: 'join-request',
-                    target: state.broadcasterId,
-                    echo: false
-                });
-            }, 1000);
-        }
-
-        // If I am owner but not the broadcasterId, hide my controls
-        if (isOwner && state.broadcasterId !== room.clientId) {
-            ui.hostControls.classList.add('hidden');
+             // Only join if host exists (not zombie)
+             if (room.peers[state.broadcasterId]) {
+                 console.log("Stream detected, requesting join...");
+                 ui.statusText.textContent = "Joining Stream...";
+                 ui.placeholder.classList.add('visible');
+                 
+                 if (joinTimeout) clearTimeout(joinTimeout);
+                 joinTimeout = setTimeout(() => {
+                     room.send({
+                         type: 'join-request',
+                         target: state.broadcasterId,
+                         echo: false
+                     });
+                 }, 1000);
+             }
         }
     } else {
         // Stream Ended
@@ -404,9 +438,6 @@ function handleRoomState(state) {
                 hostConnection = null;
             }
             ui.video.srcObject = null;
-            
-            // If owner, show controls again
-            if (isOwner) checkHostCapability();
         }
     }
 }
@@ -420,6 +451,11 @@ function handlePresence(presence) {
     if (isBroadcasting) {
         const peerCount = Object.keys(peerConnections).length;
         ui.hostStats.textContent = `Peers: ${peerCount} | Streaming Active`;
+    }
+    
+    // Owner: Check for zombie host on presence change
+    if (isOwner) {
+        checkHostCapability();
     }
 }
 
