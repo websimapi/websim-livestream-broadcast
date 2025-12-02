@@ -17,6 +17,7 @@ const RTC_CONFIG = {
 let localStream = null;
 let peerConnections = {}; // Host: map of clientId -> RTCPeerConnection
 let hostConnection = null; // Viewer: RTCPeerConnection to Host
+let iceCandidateBuffer = []; // Viewer: buffer for candidates arriving before remote description
 let isBroadcasting = false;
 
 // UI Elements
@@ -253,11 +254,13 @@ async function handleMessage(e) {
                 }
             } else if (data.type === 'signal-ice') {
                 // Ensure this candidate is for ME
-                if (data.target === room.clientId && hostConnection && data.candidate) {
-                    try {
-                        await hostConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                    } catch (err) {
-                        console.error("Viewer: Error adding ICE candidate", err);
+                if (data.target === room.clientId && data.candidate) {
+                    const candidate = new RTCIceCandidate(data.candidate);
+                    // If remote description is set, add immediately. Otherwise buffer.
+                    if (hostConnection && hostConnection.remoteDescription && hostConnection.remoteDescription.type) {
+                        hostConnection.addIceCandidate(candidate).catch(err => console.error("Viewer: ICE Error", err));
+                    } else {
+                        iceCandidateBuffer.push(candidate);
                     }
                 }
             }
@@ -306,14 +309,22 @@ async function handleOffer(data) {
     
     if (hostConnection) hostConnection.close();
     hostConnection = new RTCPeerConnection(RTC_CONFIG);
+    iceCandidateBuffer = []; // Reset buffer
 
     // Handle Incoming Stream
     hostConnection.ontrack = (event) => {
         console.log("Received Track");
-        if (ui.video.srcObject !== event.streams[0]) {
-            ui.video.srcObject = event.streams[0];
-            ui.video.muted = false; // Enable audio for viewer
+        // Robust stream assignment
+        const stream = event.streams[0] || new MediaStream([event.track]);
+
+        if (ui.video.srcObject !== stream) {
+            ui.video.srcObject = stream;
+            // Note: We leave the video muted to allow autoplay to work without interaction
+            // ui.video.muted = false; 
             ui.placeholder.classList.remove('visible');
+            
+            // Explicitly play to ensure video starts
+            ui.video.play().catch(e => console.log("Autoplay blocked, user interaction required:", e));
         }
     };
 
@@ -330,6 +341,12 @@ async function handleOffer(data) {
     };
 
     await hostConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    
+    // Process any buffered candidates that arrived while setting remote description
+    while (iceCandidateBuffer.length > 0) {
+        hostConnection.addIceCandidate(iceCandidateBuffer.shift()).catch(e => console.error("Buffered ICE Error:", e));
+    }
+
     const answer = await hostConnection.createAnswer();
     await hostConnection.setLocalDescription(answer);
 
