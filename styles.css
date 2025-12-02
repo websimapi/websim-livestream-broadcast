@@ -142,6 +142,66 @@ button {
     font-family: monospace;
 }
 
+/* Active Stream Overlay */
+.live-overlay {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-end;
+    pointer-events: none; /* Let clicks pass through transparent areas */
+}
+.live-overlay > * {
+    pointer-events: auto; /* Re-enable pointer events for buttons/badges */
+}
+
+.live-overlay.hidden { display: none; }
+
+.live-header {
+    background: rgba(0,0,0,0.6);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.badge-live {
+    color: #ef4444;
+    font-weight: 800;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.badge-live::before {
+    content: '●';
+    font-size: 1.2em;
+    animation: pulse 2s infinite;
+}
+
+.stats-text {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+.btn-small {
+    padding: 0.5rem 1rem;
+    font-size: 0.8rem;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
 /* Stream Info */
 .stream-info {
     padding: 1.5rem;

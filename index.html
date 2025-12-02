@@ -29,6 +29,7 @@
                     </div>
                 </div>
 
+                <!-- Host Setup Panel (Visible when IDLE) -->
                 <div id="host-controls" class="controls-overlay hidden">
                     <div class="control-panel">
                         <h3>Broadcast Controls</h3>
@@ -39,14 +40,19 @@
                             <button id="btn-start-stream" class="btn-primary">
                                 <span class="icon">●</span> Go Live
                             </button>
-                            <button id="btn-stop-stream" class="btn-danger hidden">
-                                <span class="icon">■</span> End Stream
-                            </button>
-                        </div>
-                        <div class="tech-stats" id="host-stats">
-                            Peers: 0 | Bandwidth: 0 KB/s
                         </div>
                     </div>
+                </div>
+
+                <!-- Active Stream Controls (Visible when LIVE) -->
+                <div id="live-controls" class="live-overlay hidden">
+                    <div class="live-header">
+                        <span class="badge-live">LIVE</span>
+                        <span id="live-stats" class="stats-text">Peers: 0</span>
+                    </div>
+                    <button id="btn-stop-stream" class="btn-danger btn-small">
+                        <span class="icon">■</span> End Stream
+                    </button>
                 </div>
             </div>
 

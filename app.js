@@ -25,6 +25,7 @@ const ui = {
     placeholder: document.getElementById('video-placeholder'),
     statusText: document.getElementById('status-text'),
     hostControls: document.getElementById('host-controls'),
+    liveControls: document.getElementById('live-controls'),
     streamTitleInput: document.getElementById('stream-title-input'),
     btnStart: document.getElementById('btn-start-stream'),
     btnStop: document.getElementById('btn-stop-stream'),
@@ -34,7 +35,7 @@ const ui = {
     displayHost: document.getElementById('streamer-name'),
     displayAvatar: document.getElementById('streamer-avatar'),
     viewerCount: document.getElementById('viewer-count'),
-    hostStats: document.getElementById('host-stats'),
+    hostStats: document.getElementById('live-stats'),
 
     // Chat
     chatMsgs: document.getElementById('chat-messages'),
@@ -115,12 +116,12 @@ function checkHostCapability() {
             // It's another tab of mine (or I am owner but another owner tab is live)
             // Show viewer UI.
             ui.hostControls.classList.add('hidden');
+            ui.liveControls.classList.add('hidden');
         }
     } else {
         // No one is live. Show controls.
         ui.hostControls.classList.remove('hidden');
-        ui.btnStart.classList.remove('hidden');
-        ui.btnStop.classList.add('hidden');
+        ui.liveControls.classList.add('hidden');
     }
 }
 
@@ -141,8 +142,8 @@ async function startBroadcast() {
 
         // Update UI
         isBroadcasting = true;
-        ui.btnStart.classList.add('hidden');
-        ui.btnStop.classList.remove('hidden');
+        ui.hostControls.classList.add('hidden');
+        ui.liveControls.classList.remove('hidden');
         ui.placeholder.classList.remove('visible');
 
         // Update Room State
@@ -183,8 +184,8 @@ function stopBroadcast() {
     // Reset UI
     isBroadcasting = false;
     ui.video.srcObject = null;
-    ui.btnStart.classList.remove('hidden');
-    ui.btnStop.classList.add('hidden');
+    ui.hostControls.classList.remove('hidden');
+    ui.liveControls.classList.add('hidden');
     ui.placeholder.classList.add('visible');
     ui.statusText.textContent = "Broadcast Ended";
     
